@@ -3,8 +3,7 @@ This repository proposes, implements and benchmarks alternative tree tensor netw
 
 ## Dependencies :
 
-$\begin{enumerate}
-  \item TreeTCI (rev="structure_update")
-  \item ITensor
-  \item TensorCrossInterpolation
-\end{enumerate}$
+1. TreeTCI (rev="structure_update")
+2. ITensor
+3. TensorCrossInterpolation
+
