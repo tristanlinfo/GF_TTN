@@ -128,15 +128,15 @@ function seed_pivots!(tci)
     for i in 1:10
         # Generate a random input of length equal to number of vertices
         x = rand(1:2, length(vertices(tci.g)))
-        TreeTCI_structural.addglobalpivots!(tci, [x])
+        TreeTCI.addglobalpivots!(tci, [x])
     end
 end
 
 function sampled_errors(f, ttn, nsamples::Int, bits::Int)
     """ Compute sampled errors between function f and ttn approximation over nsamples random inputs of length 2*bits."""
-    eval_ttn = if ttn isa TreeTCI_structural.SimpleTCI
-        sitetensors = TreeTCI_structural.fillsitetensors(ttn, f)
-        TreeTCI_structural.TreeTensorNetwork(ttn.g, sitetensors)
+    eval_ttn = if ttn isa TreeTCI.SimpleTCI
+        sitetensors = TreeTCI.fillsitetensors(ttn, f)
+        TreeTCI.TreeTensorNetwork(ttn.g, sitetensors)
     else
         ttn
     end
@@ -147,7 +147,7 @@ function sampled_errors(f, ttn, nsamples::Int, bits::Int)
         # Generate a random 3R sequence of 1s and 2s
         x = rand(1:2, 2 * bits)
         # Evaluate the concrete TreeTensorNetwork (it provides evaluate/call)
-        approx = TreeTCI_structural.evaluate(eval_ttn, x)
+        approx = TreeTCI.evaluate(eval_ttn, x)
         err = abs(f(x) - approx)
         error_inf = max(error_inf, err)
         error_l1 += err
