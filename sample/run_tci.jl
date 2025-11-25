@@ -5,13 +5,6 @@ using Logging
 include(joinpath(@__DIR__, "..", "src", "tci_src.jl"))
 using .SampleTCI
 
-using Random
-using Plots
-using Logging
-
-include(joinpath(@__DIR__, "..", "src", "tci_src.jl"))
-using .SampleTCI
-
 
 function main()
 

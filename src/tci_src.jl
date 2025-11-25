@@ -177,8 +177,8 @@ function run_experiment(; rng_seed::Int=1234, R::Int=16, nsteps::Int=10, maxbond
     elseif mode == :fictitious
         # Extract GF parameters (with sensible defaults)
         n = get(gf_params, :n, min(num_vecs, 30))
-        eps = get(gf_params, :eps, randn(n))
-        lambda = get(gf_params, :lambda, rand(n))
+        eps = get(gf_params, :eps, 3 * abs.(randn(n)))
+        lambda = get(gf_params, :lambda, 10 * abs.(randn(n)))
         # build all three topologies for fictitious GF
         f_seq = make_fictitious_gf_seq(n, eps, lambda)
         f_int = make_fictitious_gf_int(n, eps, lambda)
