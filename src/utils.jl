@@ -19,97 +19,129 @@ Exported functions:
 - `sampled_errors(f, ttn, nsamples, bits)` -> compute sampled errors between function f and ttn approximation over nsamples random inputs of length 2*bits.
 """
 
-export fused_localdims, compress_indexset, expand_fused_indexset, fuse_graph_pairs, make_fused_wrapper, bits2decimal, seed_pivots!, sampled_errors
-
+export fused_preparations
+using NamedGraphs: NamedGraph, add_edge!, vertices, NamedEdge, has_edge
+include(joinpath(@__DIR__, "..", "src", "topologies.jl"))
 using Graphs
 using TreeTCI
 
-function fused_localdims(localdims::AbstractVector{<:Integer}, groups::AbstractVector{<:AbstractVector{<:Integer}})
-    return [prod(localdims[g]) for g in groups]
+"""
+    fuse_graph_pairs(g::NamedGraph, groups::Vector{Vector{Int}})
+
+Given an input graph `g` with vertices labeled 1..N and a partition `groups`
+(vector of index vectors), return a new `NamedGraph` with one vertex per group
+and an edge between group a and group b if any vertex in a is connected to any
+vertex in b in `g`.
+"""
+function fuse_graph_pairs(g::NamedGraph, groups::Vector{Vector{Int}})
+    m = length(groups)
+    fg = NamedGraph(m)
+    # For each pair of groups check if there's any edge between their members
+    for a in 1:m
+        for b in (a+1):m
+            found = false
+            for u in groups[a]
+                for v in groups[b]
+                    if has_edge(g, u, v) || has_edge(g, v, u)
+                        add_edge!(fg, a, b)
+                        found = true
+                        break
+                    end
+                end
+                if found
+                    break
+                end
+            end
+        end
+    end
+    return fg
 end
 
 """
-compress_indexset(orig, groups, localdims)
-- `orig` : Vector{Int} of length N (N = total number of original sites), where orig[i] in 1:localdims[i]
-- returns: Vector{Int} of length `length(groups)`, each entry in 1:fused_dim
+    fused_localdims(localdims::Vector{Int}, groups::Vector{Vector{Int}})
 
-The packing uses mixed-radix with the first site in the group as least-significant.
+Compute the local dimensions for each fused group as the product of the
+constituent local dims.
 """
-function compress_indexset(orig::AbstractVector{<:Integer}, groups::AbstractVector{<:AbstractVector{<:Integer}}, localdims::AbstractVector{<:Integer})
-    fused = Vector{Int}(undef, length(groups))
-    for (i, g) in enumerate(groups)
-        dims = localdims[g]
-        idxs = orig[g]
-        multiplier = 1
-        val = 0
-        for j in eachindex(dims)
-            val += (idxs[j] - 1) * multiplier
-            multiplier *= dims[j]
+function fused_localdims(localdims::Vector{Int}, groups::Vector{Vector{Int}})
+    return [prod(localdims[idx] for idx in group) for group in groups]
+end
+
+"""
+    compress_indexset(orig::Vector{Int}, groups::Vector{Vector{Int}}, localdims::Vector{Int})
+
+Convert an original indexset (one integer per original site) to an indexset
+for the fused groups. The mapping uses a mixed-radix ordering where the first
+site in the group is the least significant digit.
+"""
+function compress_indexset(orig::Vector{Int}, groups::Vector{Vector{Int}}, localdims::Vector{Int})
+    fused = Int[]
+    for group in groups
+        idx = 0
+        radix = 1
+        for site in group
+            i = orig[site] - 1 # zero-based
+            idx += i * radix
+            radix *= localdims[site]
         end
-        fused[i] = val + 1
+        push!(fused, idx + 1)
     end
     return fused
 end
 
 """
-expand_fused_indexset(fused, groups, localdims)
-- `fused` : Vector{Int} of length n_groups (each in 1:fused_dim)
-- returns: Vector{Int} of length N (original sites), in the same ordering as the concatenation of `groups`.
+    expand_fused_indexset(fused::Vector{Int}, groups::Vector{Vector{Int}}, localdims::Vector{Int})
+
+Inverse of `compress_indexset`: expands fused indices back to original per-site
+indices.
 """
-function expand_fused_indexset(fused::AbstractVector{<:Integer}, groups::AbstractVector{<:AbstractVector{<:Integer}}, localdims::AbstractVector{<:Integer})
-    N = sum(length.(groups))
-    out = Vector{Int}(undef, N)
-    offset = 1
-    for (i, g) in enumerate(groups)
-        dims = localdims[g]
-        v = fused[i] - 1
-        for j in 1:length(g)
-            d = dims[j]
-            out[offset] = (v % d) + 1
-            v ÷= d
-            offset += 1
+function expand_fused_indexset(fused::Vector{Int}, groups::Vector{Vector{Int}}, localdims::Vector{Int})
+    N = sum(length(g) for g in groups)
+    orig = Vector{Int}(undef, N)
+    for (gi, group) in enumerate(groups)
+        val = fused[gi] - 1
+        for site in group
+            d = localdims[site]
+            orig[site] = (val % d) + 1
+            val ÷= d
         end
     end
-    return out
+    return orig
 end
 
 """
-fuse_graph_pairs(g, groups)
-- `g` : a Graphs graph (e.g., `SimpleGraph`) indexing original sites with integers 1..N
-- `groups` : grouping of original vertices
-- returns: new `SimpleGraph` with `length(groups)` vertices. An edge exists between fused vertices if any cross-edge exists.
+    make_fused_wrapper(f_orig, groups, localdims)
+
+Return a function `f_fused` that accepts fused indexsets (one integer per
+group) and calls `f_orig` with the expanded original indexset.
 """
-function fuse_graph_pairs(g::Graphs.AbstractGraph, groups::AbstractVector{<:AbstractVector{<:Integer}})
-    ng = length(groups)
-    G = SimpleGraph(ng)
-    v2group = Dict{Int,Int}()
-    for (gi, grp) in enumerate(groups)
-        for v in grp
-            v2group[v] = gi
-        end
+function make_fused_wrapper(f_orig, groups::Vector{Vector{Int}}, localdims::Vector{Int})
+    return function (fused_idx)
+        orig = expand_fused_indexset(fused_idx, groups, localdims)
+        return f_orig(orig)
     end
-    for e in edges(g)
-        s = src(e)
-        d = dst(e)
-        gs = v2group[s]
-        gd = v2group[d]
-        if gs != gd && !has_edge(G, gs, gd)
-            add_edge!(G, gs, gd)
-        end
-    end
-    return G
 end
 
 """
-make_fused_wrapper(f_orig, groups, localdims)
-- returns a function `f_fused(fused_idxs)` that expands `fused_idxs` and calls `f_orig(expanded)`.
-- `f_orig` is expected to accept a vector of original indices.
+    fused_preparations(
+        f,
+        groups::Vector{Vector{Int}},
+        localdims::Vector{Int},
+    )   
+Prepare fused graph, fused localdims and fused function wrapper.
 """
-function make_fused_wrapper(f_orig::Function, groups, localdims)
-    return function (fused_idxs)
-        expanded = expand_fused_indexset(fused_idxs, groups, localdims)
-        return f_orig(expanded)
-    end
+
+function fused_preparations(
+    f,
+    groups::Vector{Vector{Int}},
+    localdims::Vector{Int},
+)
+    """ Prepare fused graph, fused localdims and fused function wrapper."""
+    baseg = BTTN(length(localdims) ÷ 2) # base graph with 2R vertices (x and y branches)
+    fused_g = fuse_graph_pairs(baseg, groups)
+    fused_dims = fused_localdims(localdims, groups)
+    f_fused = make_fused_wrapper(f, groups, localdims)
+    return fused_g, fused_dims, f_fused
 end
 
 

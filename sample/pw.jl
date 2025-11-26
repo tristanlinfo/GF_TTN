@@ -1,10 +1,42 @@
 using Random
 using Plots
-using Logging
-include(joinpath(@__DIR__, "..", "src", "functions.jl"))
-import .SampleTreeTCI: pw, sampled_error
 include(joinpath(@__DIR__, "..", "src", "topologies.jl"))
+include(joinpath(@__DIR__, "..", "src", "utils.jl"))
+using .TTNUtils: bits2decimal
 using TreeTCI
+
+function sampled_error(f, ttn, nsamples, bits, d)
+    """ Compute sampled errors between function f and ttn approximation over nsamples random inputs of length 2*bits."""
+    eval_ttn = if ttn isa TreeTCI.SimpleTCI
+        sitetensors = TreeTCI.fillsitetensors(ttn, f)
+        TreeTCI.TreeTensorNetwork(ttn.g, sitetensors)
+    else
+        ttn
+    end
+    error_l1 = 0.0
+    for _ in 1:nsamples
+        # Generate a random 3R sequence of 1s and 2s
+        x = rand(1:2, d * bits)
+        # Evaluate the concrete TreeTensorNetwork (it provides evaluate/call)
+        approx = TreeTCI.evaluate(eval_ttn, x)
+        err = abs(f(x) - approx)
+        error_l1 += err
+    end
+    return error_l1 / nsamples
+end
+
+global k = randn(3, 30)
+global n = 30
+
+function pw(v)
+    """ Plane wave function in 3D with 30 different randomly (normal distribution) generated wavevectors k_j """
+    r = [bits2decimal(v[1:div(length(v), 3)]), bits2decimal(v[div(length(v), 3)+1:2*div(length(v), 3)]), bits2decimal(v[2*div(length(v), 3)+1:end])]
+    sum = 0.0
+    for i in 1:n
+        sum += cos(i * r' * k[:, i])
+    end
+    return sum
+end
 
 function main()
     # Parameters for TCI
@@ -20,7 +52,7 @@ function main()
     )
 
     ntopos = length(topo)
-    nsteps = 20
+    nsteps = 16
     step = 3
     maxit = 5
 
@@ -72,8 +104,8 @@ function main()
     p1 = plot(xlabel="Max bond dimension", ylabel="Sampled L1 Error", yscale=:log10)
     topo_names = collect(keys(topo))
     for j in 1:ntopos
-        plot!(p1, 5 * collect(1:nsteps), error_l1[j, :], label=topo_names[j], marker=:o)
+        plot!(p1, step * collect(1:nsteps), error_l1[j, :], label=topo_names[j], marker=:o)
     end
+    savefig(p1, "pw_tci_sampled_l1_error.svg")
     display(p1)
-    savefig(p1, "pw_tci_sampled_l1_error.png")
 end
