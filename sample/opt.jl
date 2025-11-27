@@ -39,9 +39,39 @@ function gf(v)
     lambda_local = λ
     g = zero(ComplexF64)
     for j in 1:n_local
-        g += exp(-1im * j * eps_local[j] * (x - y)) #* exp(-lambda_local[j] * abs(x - y))
+        g += exp(-1im * j * eps_local[j] * (x - y)) * exp(-lambda_local[j] * abs(x - y))
     end
     return 1im * g
+end
+
+function init(topo::Dict{String,NamedGraph{Int64}}, f; R::Int, d::Int, localdims::Vector{Int})
+    newtopo = Dict()
+    kwargs = (
+        maxiter=5,
+        sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer(),
+        tolerance=1e-4,
+    )
+    println("---- Starting structural optimization runs ----")
+    for (name, graph) in pairs(topo)
+        println("Topology ", name, ":")
+        ttn, ranks, errors = TreeTCI.crossinterpolate(ComplexF64, f, localdims, graph; kwargs...)
+        errl1 = sampled_error(f, ttn, 1000, R, d)
+        println("Sampled L1 error: ", errl1)
+        println("Maxbonddim: ", ranks[end])
+        center_vertex = 1
+        # structural optimization can sometimes fail if the entanglement vector is empty
+        g_tmp, original_entanglements, entanglements = TreeTCI.ttnopt(ttn; ortho_vertex=center_vertex, max_degree=1, T0=1.0)
+        ttn_struct, ranks_struct, errors_struct = TreeTCI.crossinterpolate(ComplexF64, f, localdims, g_tmp; center_vertex=center_vertex, kwargs...)
+        errl1_struct = sampled_error(f, ttn_struct, 1000, R, d)
+        println("Sampled L1 error after structural optimization: ", errl1_struct)
+        println("Maxbonddim after structural optimization: ", ranks_struct[end])
+        newtopo[string(name, "_struct")] = g_tmp
+        g_tmp, original_entanglements, entanglements = TreeTCI.ttnopt(ttn; ortho_vertex=center_vertex, max_degree=2, T0=1.0)
+        ttn_struct, ranks_struct, errors_struct = TreeTCI.crossinterpolate(ComplexF64, f, localdims, g_tmp; center_vertex=center_vertex, kwargs...)
+        errl1_struct = sampled_error(f, ttn_struct, 1000, R, d)
+        newtopo[string(name, "_struct2")] = g_tmp
+    end
+    return newtopo
 end
 
 function main()
@@ -50,5 +80,62 @@ function main()
     d = 2 # spatial dimension
     localdims = fill(2, d * R) # local dimensions for d dimensions with R bits each
 
+    topo = Dict(
+        #"BTTN" => BTTN(R, d),
+        "QTT_Int" => QTT_Alt(R, d),
+        "QTT_Seq" => QTT_Block(R, d),
+        "CTTN" => CTTN(R, d)
+    )
 
+    newtopo = init(topo, gf; R=R, d=d, localdims=localdims)
+
+    fulltopo = merge(topo, newtopo)
+
+    ntopos = length(fulltopo)
+    nsteps = 10
+    step = 3
+    maxit = 5
+    nsamples = 1000
+
+    # Output storage
+    error_l1 = zeros(ntopos, nsteps)
+    error_pivot = zeros(ntopos, nsteps)
+    rankendlist = zeros(ntopos, nsteps)
+    ranklist = zeros(ntopos, nsteps)
+
+    for i in 1:nsteps
+        maxbd = step * i
+        println("Max bond dimension: $maxbd")
+        # -----------------------------
+        # Construct initial TCIs
+        # -----------------------------
+        for (j, (toponame, topology)) in enumerate(fulltopo)
+            println("Topology: $toponame")
+            # Build Simple TCIs so each run starts from identical initial pivots
+            ttn = TreeTCI.SimpleTCI{ComplexF64}(gf, localdims, topology)
+            #TreeTCI.addglobalpivots!(ttn,global_pivots)
+            # Optimize TCI
+            ranks, errors = TreeTCI.optimize!(ttn, gf; tolerance=1e-16, maxiter=maxit, maxbonddim=maxbd, sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer())
+
+            # Compute sampled L1 error
+            errl1 = sampled_error(gf, ttn, 1000, R, d)
+            # Store results
+            error_l1[j, i] = errl1
+            error_pivot[j, i] = errors[end]
+            rankendlist[j, i] = ranks[end]
+            ranklist[j, i] = maxbd
+        end
+
+    end
+
+    plt = plot()
+    x = [i * step for i in 1:nsteps]
+    for (j, (toponame, topology)) in enumerate(fulltopo)
+        plot!(plt, x, error_l1[j, :], label=toponame, marker=:o, yscale=:log10)
+    end
+    xlabel!(plt, "max bond dim")
+    ylabel!(plt, "sampled L1 error")
+    title!(plt, "Fictitious GF sampled L1 error")
+    savefig(plt, "SVG/fictitious_gf_sampled_l1_error.svg")
+    display(plt)
 end

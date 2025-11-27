@@ -25,7 +25,7 @@ function sampled_error(f, ttn, nsamples, bits, d)
     return error_l1 / nsamples
 end
 
-global n = 15
+global n = 30
 global ϵ = abs.(randn(n)) * 3.0
 global λ = abs.(randn(n)) * 10.0
 
@@ -39,9 +39,9 @@ function gf(v)
     lambda_local = λ
     g = zero(ComplexF64)
     for j in 1:n_local
-        g += exp(-1im * j * eps_local[j] * (x - y)) #* exp(-lambda_local[j] * abs(x - y))
+        g += real(exp(-1im * j * eps_local[j] * (x - y))) #* exp(-lambda_local[j] * abs(x - y))
     end
-    return 1im * g
+    return g
 end
 
 function main()
@@ -62,7 +62,7 @@ function main()
     )
 
     ntopos = length(topo)
-    nsteps = 6
+    nsteps = 10
     step = 3
     maxit = 5
     nsamples = 1000
@@ -93,25 +93,21 @@ function main()
             for (j, (toponame, topology)) in enumerate(topo)
                 println("Topology: $toponame")
                 if toponame == "Fused_BTTN"
-                    f = f_fused
-                    localdims_use = fused_localdims
                     # Build Simple TCIs so each run starts from identical initial pivots
-                    ttn = TreeTCI.SimpleTCI{ComplexF64}(f, localdims_use, topology)
+                    ttn = TreeTCI.SimpleTCI{ComplexF64}(f_fused, fused_localdims, fused_g)
                     #TreeTCI.addglobalpivots!(ttn,global_pivots)
                     # Optimize TCI
-                    ranks, errors = TreeTCI.optimize!(ttn, f; maxiter=maxit, maxbonddim=maxbd, sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer())
+                    ranks, errors = TreeTCI.optimize!(ttn, f_fused; tolerance=1e-16, maxiter=maxit, maxbonddim=maxbd, sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer())
                     errl1_fused = 0.0
+                    sitetensors = TreeTCI.fillsitetensors(ttn, f_fused)
+                    eval_ttn = TreeTCI.TreeTensorNetwork(ttn.g, sitetensors)
                     for k in 1:nsamples
                         orig = rand(1:2, 2R)
                         fused_idx = compress_indexset(orig, groups, localdims)
-                        eval_ttn = if ttn isa TreeTCI.SimpleTCI
-                            sitetensors = TreeTCI.fillsitetensors(ttn, f)
-                            TreeTCI.TreeTensorNetwork(ttn.g, sitetensors)
-                        else
-                            ttn
-                        end
                         approx = TreeTCI.evaluate(eval_ttn, fused_idx)
-                        errl1_fused += abs(f(orig) - approx)
+                        # compare the fused-network approximation to the original function evaluated
+                        # on the full indexset `orig` (not to `f_fused(orig)` — that expects fused indices)
+                        errl1_fused += abs(gf(orig) - approx)
                     end
                     error_l1[j, i] = errl1_fused / nsamples
                     error_pivot[j, i] = errors[end]
@@ -121,7 +117,7 @@ function main()
                     ttn = TreeTCI.SimpleTCI{ComplexF64}(gf, localdims, topology)
                     #TreeTCI.addglobalpivots!(ttn,global_pivots)
                     # Optimize TCI
-                    ranks, errors = TreeTCI.optimize!(ttn, gf; maxiter=maxit, maxbonddim=maxbd, sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer())
+                    ranks, errors = TreeTCI.optimize!(ttn, gf; tolerance=1e-16, maxiter=maxit, maxbonddim=maxbd, sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer())
                     # Compute sampled L1 error
                     errl1 = sampled_error(gf, ttn, nsamples, R, d)
                     # Store results
@@ -131,7 +127,6 @@ function main()
                     ranklist[j, i] = maxbd
                 end
             end
-
         end # tstart elapsed
         println("Elapsed time for step $step: $tstart seconds")
     end
