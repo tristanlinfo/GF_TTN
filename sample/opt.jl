@@ -54,7 +54,6 @@ function init(topo::Dict{String,NamedGraph{Int64}}, f; R::Int, d::Int, localdims
         maxiter=5,
         sweepstrategy=TreeTCI.LocalAdjacentSweep2sitePathProposer(),
         tolerance=1e-4,
-        maxbonddim=15,
     )
 
     println("---- Starting structural optimization runs ----")
@@ -68,10 +67,15 @@ function init(topo::Dict{String,NamedGraph{Int64}}, f; R::Int, d::Int, localdims
 
         center_vertex = 1
 
-        for i in 3:3
+        for i in 1:3
             maxdeg = i
-            g_tmp, original_entanglements, entanglements = TreeTCI.ttnopt(ttn; ortho_vertex=center_vertex, max_degree=maxdeg, T0=0.0)
-            newtopo[string(name, "_maxdeg", string(i))] = g_tmp
+            try
+                g_tmp, original_entanglements, entanglements = TreeTCI.ttnopt(ttn; ortho_vertex=center_vertex, max_degree=maxdeg, T0=0.0)
+                newtopo[string(name, "_maxdeg", string(i))] = g_tmp
+            catch e
+                @warn "ttnopt failed for topology $name with maxdeg=$maxdeg: $e"
+                continue
+            end
         end
     end
     return newtopo
@@ -85,19 +89,19 @@ function main()
 
     topo = Dict(
         "BTTN" => BTTN(R, d),
-        #"QTT_Int" => QTT_Alt(R, d),
-        #"QTT_Seq" => QTT_Block(R, d),
-        #"CTTN" => CTTN(R, d),
-        #"TTTN" => TTTN(R, d)
+        "QTT_Int" => QTT_Alt(R, d),
+        "QTT_Seq" => QTT_Block(R, d),
+        "CTTN" => CTTN(R, d),
+        "TTTN" => TTTN(R, d)
     )
 
-    newtopo = init(topo, dcgf; R=R, d=d, localdims=localdims)
+    newtopo = init(Dict("QTT_Int" => QTT_Alt(R, d)), dcgf; R=R, d=d, localdims=localdims)
 
     fulltopo = merge(topo, newtopo)
 
     ntopos = length(fulltopo)
-    nsteps = 10
-    step = 1
+    nsteps = 6
+    step = 10
     maxit = 5
     nsamples = 1000
 
@@ -115,11 +119,30 @@ function main()
     )
 
     for (i, (name, graph)) in enumerate(fulltopo)
-        println("Topology: $name")
-        ttn, ranks, errors, bonds = TreeTCI.crossinterpolate(ComplexF64, dcgf, localdims, graph; kwargs...)
-        ITensor_ttn = TreeTCI.convert_ITensorNetwork(ttn, 1)
-        #println(" ITensor Network structure:")
-        #print(ITensor_ttn)
-        #println(" Bonds: ", bonds)
+        for k in 1:nsteps
+            kwargs = merge(kwargs, (maxbonddim=step * k,))
+            println("Topology: $name")
+            ttn, ranks, errors, bonds = TreeTCI.crossinterpolate(ComplexF64, dcgf, localdims, graph; kwargs...)
+            if name == "QTT_Int_maxdeg3"
+                ITensor_ttn = TreeTCI.convert_ITensorNetwork(ttn, 1)
+                println(" ITensor Network structure:")
+                print(ITensor_ttn)
+                println(" Bonds: ", bonds)
+            end
+            errl1 = sampled_error(dcgf, ttn, nsamples, R, d)
+            error_l1[i, k] = errl1
+            rankendlist[i, k] = ranks[end]
+            ranklist[i, k] = step * k
+            println(" Sampled L1 error: ", errl1)
+        end
     end
+
+    p1 = plot(title="Sampled L1 Error vs Max Bond Dimension", xlabel="Max Bond Dimension", ylabel="Sampled L1 Error", yscale=:log10)
+    topo_names = collect(keys(fulltopo))
+    for i in 1:ntopos
+        plot!(p1, step:step:step*nsteps, error_l1[i, :], label=topo_names[i], marker=:o)
+    end
+    savefig(p1, "dcgf_sampled_l1_error.svg")
+    display(p1)
+
 end
